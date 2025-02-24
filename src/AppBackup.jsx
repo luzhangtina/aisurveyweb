@@ -1,26 +1,27 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Mic, Speaker } from "lucide-react";
+import { io } from "socket.io-client";
 import { MediaRecorder, register } from "extendable-media-recorder";
 import { connect } from "extendable-media-recorder-wav-encoder";
 import ThinkingDots from "./ThinkingDots";
 
-const SERVER_URL = "ws://localhost:5000/ws";
+const SERVER_URL = "http://localhost:5000";
 
-function App() {
+function AppBackup() {
   const [encoderInitialized, setEncoderInitialized] = useState(false);
   const [isConversionStarted, setIsConversionStarted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [speakerSize, setSpeakerSize] = useState(120);
   const [micSize, setMicSize] = useState(120);
-  const wsRef = useRef(null);
+  const socketRef = useRef(null);
   const startRecordingRef = useRef(null);
   const animationFrameRef = useRef(null);
   const micAnimationFrameRef = useRef(null);
 
   const sendToServer = useCallback((init, audioBlob = null) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.warn("⚠️ WebSocket not connected!");
+    if (!socketRef.current?.connected) {
+      console.warn("⚠️ Socket is not connected! Trying to reconnect...");
       return;
     }
 
@@ -31,7 +32,7 @@ function App() {
 
     if (init) {
       console.log("📤 Sending context to server:", clientInfo);
-      wsRef.current.send(JSON.stringify(clientInfo));
+      socketRef.current.emit("client_voice", clientInfo);
     } else if (audioBlob) {
       // Create a new FileReader
       const reader = new FileReader();
@@ -59,7 +60,7 @@ function App() {
           };
 
           console.log("📤 Sending Base64-encoded WAV data to server...");
-          wsRef.current.send(JSON.stringify(audioClientInfo));
+          socketRef.current.emit("client_voice", audioClientInfo);
         } catch (error) {
           console.error("Error processing audio data:", error);
         }
@@ -70,43 +71,42 @@ function App() {
     }
   }, []);
 
-  const playAudio = useCallback(async (audioData) => {
-    if (!audioData) return;
-  
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    
-    try {
-      const arrayBuffer = await audioData.arrayBuffer(); // Convert Blob to ArrayBuffer
-      const decodedData = await audioContext.decodeAudioData(arrayBuffer);
-  
-      const source = audioContext.createBufferSource();
-      source.buffer = decodedData;
-      source.connect(audioContext.destination);
-  
-      let direction = 1;
-      const animate = () => {
-        setSpeakerSize(prev => {
-          const newSize = prev + direction;
-          if (newSize >= 144) direction = -1;
-          if (newSize <= 120) direction = 1;
-          return newSize;
-        });
-        animationFrameRef.current = requestAnimationFrame(animate);
-      };
-  
-      source.onended = () => {
-        console.log("✅ AI speech ended. Starting user recording...");
-      };
-  
+  const playAudio = useCallback((audioData) => {
+    const audioBlob = new Blob([audioData], { type: "audio/wav" });
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+
+    let direction = 1;
+    const animate = () => {
+      setSpeakerSize(prev => {
+        const newSize = prev + direction;
+        if (newSize >= 144) direction = -1;
+        if (newSize <= 120) direction = 1;
+        return newSize;
+      });
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    audio.oncanplaythrough = () => {
+      console.log("🔊 AI speech ready to play.");
       setIsPlaying(true);
       animationFrameRef.current = requestAnimationFrame(animate);
-      source.start(0);
-  
-    } catch (error) {
-      console.error("❌ Error decoding or playing MP3:", error);
-    }
+      audio.play().catch((error) => console.error("❌ Error playing audio:", error));
+    };
+
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl);
+      setIsPlaying(false);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      console.log("✅ AI speech ended. Starting user recording...");
+      startRecordingRef.current();
+    };
+
+    audio.onerror = () => console.error("❌ Error playing AI response audio.");
   }, []);
-  
+
   const startRecording = useCallback(async () => {    
     try {
       setIsRecording(true);
@@ -199,37 +199,51 @@ function App() {
   // Initialize socket connection using ref to persist across re-renders
   useEffect(() => {
     // Only create a new socket if one doesn't exist
-    if (!wsRef.current) {
-      wsRef.current = new WebSocket(SERVER_URL);
+    if (!socketRef.current) {
+      const newSocket = io(SERVER_URL, {
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+        transports: ["websocket"]
+      });
+      
+      socketRef.current = newSocket;
 
-      wsRef.current.onopen = () => {
-        console.log("✅ Connected to WebSocket server");
-      };
+      newSocket.on("connect", () => {
+        console.log("Connected to server:", newSocket.id);
+      });
 
-      wsRef.current.onmessage = (event) => {
-        try {
-            console.log("🎵 AI response received");
-            playAudio(event.data);
-        } catch (error) {
-          console.error("❌ Error processing WebSocket message:", error);
+      newSocket.on("disconnect", () => {
+        console.log("Disconnected from server");
+      });
+
+      newSocket.on("connect_error", (error) => {
+        if (newSocket.active) {
+          console.log("Temporary disconnect. Will retry: ", error.message);
+        } else {
+          console.log(error.message);
         }
+      });
+
+      newSocket.on("ai_speech", (audioData) => {
+        console.log("AI response received:", audioData);
+        playAudio(audioData);
+      });
+    }
+
+    // Cleanup function
+    return () => {
+      // Only close the socket if component is truly being unmounted
+      if (socketRef.current && !document.querySelector('#root')) {
+        console.log("Application is truly unmounting. Closing socket.");
+        socketRef.current.close();
+        socketRef.current = null;
       }
 
-      wsRef.current.onclose = () => console.log("❌ WebSocket closed");
-
-      return () => {
-        if (wsRef.current && !document.querySelector('#root')) {
-          console.log("Application is truly unmounting. Closing socket.");
-          wsRef.current.close();
-          wsRef.current = null;
-        }
-
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-          cancelAnimationFrame(micAnimationFrameRef.current);
-        }
-      };
-    }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
   }); // Empty dependency array for single initialization
 
   // Initialize encoder once
@@ -289,4 +303,4 @@ function App() {
   );  
 }
 
-export default App;
+export default AppBackup;
