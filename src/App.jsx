@@ -13,6 +13,10 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [speakerSize, setSpeakerSize] = useState(120);
   const [micSize, setMicSize] = useState(120);
+  const [audioQueue, setAudioQueue] = useState([]); // Queue of audio chunks
+  const [isFinal, setIsFinal] = useState(false); // Flag for final message
+  const audioContextRef = useRef(null); // Audio context reference
+  const audioSourceNodeRef = useRef(null); // Current source node reference
   const wsRef = useRef(null);
   const startRecordingRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -24,14 +28,15 @@ function App() {
       return;
     }
 
-    const clientInfo = {
+    const message = {
+      type: "client_init",
       client_id: "client1",
       name: "Tina",
-    };
+    }
 
     if (init) {
-      console.log("📤 Sending context to server:", clientInfo);
-      wsRef.current.send(JSON.stringify(clientInfo));
+      console.log("📤 Sending context to server:", message);
+      wsRef.current.send(JSON.stringify(message));
     } else if (audioBlob) {
       // Create a new FileReader
       const reader = new FileReader();
@@ -53,13 +58,15 @@ function App() {
           
           base64Audio = btoa(base64Audio);
 
-          const audioClientInfo = {
-            ...clientInfo,
+          const message = {
+            type: "client_audio_response",
+            client_id: "client1",
+            name: "Tina",
             audio_data: base64Audio,
-          };
+          }
 
           console.log("📤 Sending Base64-encoded WAV data to server...");
-          wsRef.current.send(JSON.stringify(audioClientInfo));
+          wsRef.current.send(JSON.stringify(message));
         } catch (error) {
           console.error("Error processing audio data:", error);
         }
@@ -70,42 +77,90 @@ function App() {
     }
   }, []);
 
-  const playAudio = useCallback(async (audioData) => {
-    if (!audioData) return;
-  
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    
-    try {
-      const arrayBuffer = await audioData.arrayBuffer(); // Convert Blob to ArrayBuffer
-      const decodedData = await audioContext.decodeAudioData(arrayBuffer);
-  
-      const source = audioContext.createBufferSource();
-      source.buffer = decodedData;
-      source.connect(audioContext.destination);
-  
-      let direction = 1;
-      const animate = () => {
-        setSpeakerSize(prev => {
-          const newSize = prev + direction;
-          if (newSize >= 144) direction = -1;
-          if (newSize <= 120) direction = 1;
-          return newSize;
-        });
-        animationFrameRef.current = requestAnimationFrame(animate);
-      };
-  
-      source.onended = () => {
-        console.log("✅ AI speech ended. Starting user recording...");
-      };
-  
-      setIsPlaying(true);
-      animationFrameRef.current = requestAnimationFrame(animate);
-      source.start(0);
-  
-    } catch (error) {
-      console.error("❌ Error decoding or playing MP3:", error);
+  const addToQueue = (audioChunk) => {
+    setAudioQueue((prevQueue) => [...prevQueue, audioChunk]);
+  };
+
+  const cleanup = () => {
+    audioContextRef.current.close();
+    setIsFinal(false);
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
     }
-  }, []);
+
+    setIsPlaying(false);
+
+    startRecording();
+  };
+
+  const handleWebSocketMessage = (event) => {
+    const { type, isFinal: receivedIsFinal, audioBase64 } = event;
+
+    if (type === 'server_audio_response') {
+      if (audioBase64) {
+        addToQueue(audioBase64);
+      }
+
+      if (receivedIsFinal) {
+        setIsFinal(true);
+      }
+
+      if (!isPlaying && audioQueue.length > 0) {
+        let direction = 1;
+        const animate = () => {
+          setSpeakerSize(prev => {
+            const newSize = prev + direction;
+            if (newSize >= 144) direction = -1;
+            if (newSize <= 120) direction = 1;
+            return newSize;
+          });
+          animationFrameRef.current = requestAnimationFrame(animate);
+        };
+
+        setIsPlaying(true);
+        animate(); 
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioContextRef.current = audioContext;
+        playNextAudio();
+      }
+    }
+  };
+
+  const playNextAudio = () => {
+    if (audioQueue.length > 0) {
+      const nextAudio = audioQueue[0];
+      const arrayBuffer = new Uint8Array(atob(nextAudio).split('').map(char => char.charCodeAt(0)));
+
+      const audioContext = audioContextRef.current;
+      const sourceNode = audioContext.createBufferSource();
+      audioContext.decodeAudioData(arrayBuffer.buffer, (buffer) => {
+        sourceNode.buffer = buffer;
+        sourceNode.connect(audioContext.destination);
+
+        sourceNode.start();
+        audioSourceNodeRef.current = sourceNode;
+
+        sourceNode.onended = () => {
+          setAudioQueue((prevQueue) => prevQueue.slice(1));
+          sourceNode.disconnect();
+
+          if (audioQueue.length === 0 && isFinal) {
+            cleanup();
+          } else {
+            const checkForNewAudio = () => {
+              if (audioQueue.length > 0) {
+                playNextAudio();
+              } else {
+                setTimeout(checkForNewAudio, 100); // Retry after 100ms if not final and queue is empty
+              }
+            };
+            checkForNewAudio();
+          }
+        };
+      });
+    }
+  };
   
   const startRecording = useCallback(async () => {    
     try {
@@ -208,8 +263,8 @@ function App() {
 
       wsRef.current.onmessage = (event) => {
         try {
-            console.log("🎵 AI response received");
-            playAudio(event.data);
+          const message = JSON.parse(event.data);
+          handleWebSocketMessage(message);
         } catch (error) {
           console.error("❌ Error processing WebSocket message:", error);
         }
