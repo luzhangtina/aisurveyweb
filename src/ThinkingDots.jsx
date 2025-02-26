@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 
 function ThinkingDots() {
-  const [dots, setDots] = useState("."); // Start with one dot
+  const [dots, setDots] = useState("Thinking"); // Start with one dot
 
   useEffect(() => {
     // Change the dots every 500ms
     const interval = setInterval(() => {
       setDots((prevDots) => {
-        if (prevDots.length === 3) {
-          return "."; // Reset to one dot
+        if (prevDots.length === 11) {
+          return "Thinking"; // Reset to one dot
         }
         return prevDots + "."; // Add another dot
       });

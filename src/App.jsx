@@ -273,6 +273,12 @@ function App() {
   }, [cleanup]);
 
   const startConversion = useCallback(() => {
+    const hasPermission = requestMicrophonePermission()
+    if (!hasPermission) {
+        alert("No permission")
+        return;
+    }
+    
     console.log("Start Conversion");
     sendToServer(true);
     setIsConversionStarted(true);
@@ -375,6 +381,16 @@ function App() {
     }
     initializeEncoder();
   });
+
+  async function requestMicrophonePermission() {
+      try {
+          await navigator.mediaDevices.getUserMedia({audio: true})
+          return true
+      } catch {
+          console.error('Microphone permission denied')
+          return false
+      }
+  }
 
   return (
     <div className="flex min-h-screen w-full items-center justify-center">
