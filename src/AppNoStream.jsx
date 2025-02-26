@@ -7,7 +7,7 @@ import ThinkingDots from "./ThinkingDots";
 
 const SERVER_URL = "http://localhost:5000";
 
-function AppBackup() {
+function AppNoStream() {
   const [encoderInitialized, setEncoderInitialized] = useState(false);
   const [isConversionStarted, setIsConversionStarted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -303,4 +303,4 @@ function AppBackup() {
   );  
 }
 
-export default AppBackup;
+export default AppNoStream;

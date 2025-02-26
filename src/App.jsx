@@ -6,6 +6,7 @@ import ThinkingDots from "./ThinkingDots";
 
 const SERVER_URL = "ws://localhost:5000/ws";
 
+// Playing server audio with stream. The audio is in binary mp3 format
 function App() {
   const [encoderInitialized, setEncoderInitialized] = useState(false);
   const [isConversionStarted, setIsConversionStarted] = useState(false);
@@ -21,6 +22,8 @@ function App() {
   const startRecordingRef = useRef(null);
   const animationFrameRef = useRef(null);
   const micAnimationFrameRef = useRef(null);
+  const currentQueueRef = useRef([]);
+  const isFinalRef = useRef(isFinal);
 
   const sendToServer = useCallback((init, audioBlob = null) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -77,91 +80,6 @@ function App() {
     }
   }, []);
 
-  const addToQueue = (audioChunk) => {
-    setAudioQueue((prevQueue) => [...prevQueue, audioChunk]);
-  };
-
-  const cleanup = () => {
-    audioContextRef.current.close();
-    setIsFinal(false);
-
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-
-    setIsPlaying(false);
-
-    startRecording();
-  };
-
-  const handleWebSocketMessage = (event) => {
-    const { type, isFinal: receivedIsFinal, audioBase64 } = event;
-
-    if (type === 'server_audio_response') {
-      if (audioBase64) {
-        addToQueue(audioBase64);
-      }
-
-      if (receivedIsFinal) {
-        setIsFinal(true);
-      }
-
-      if (!isPlaying && audioQueue.length > 0) {
-        let direction = 1;
-        const animate = () => {
-          setSpeakerSize(prev => {
-            const newSize = prev + direction;
-            if (newSize >= 144) direction = -1;
-            if (newSize <= 120) direction = 1;
-            return newSize;
-          });
-          animationFrameRef.current = requestAnimationFrame(animate);
-        };
-
-        setIsPlaying(true);
-        animate(); 
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        audioContextRef.current = audioContext;
-        playNextAudio();
-      }
-    }
-  };
-
-  const playNextAudio = () => {
-    if (audioQueue.length > 0) {
-      const nextAudio = audioQueue[0];
-      const arrayBuffer = new Uint8Array(atob(nextAudio).split('').map(char => char.charCodeAt(0)));
-
-      const audioContext = audioContextRef.current;
-      const sourceNode = audioContext.createBufferSource();
-      audioContext.decodeAudioData(arrayBuffer.buffer, (buffer) => {
-        sourceNode.buffer = buffer;
-        sourceNode.connect(audioContext.destination);
-
-        sourceNode.start();
-        audioSourceNodeRef.current = sourceNode;
-
-        sourceNode.onended = () => {
-          setAudioQueue((prevQueue) => prevQueue.slice(1));
-          sourceNode.disconnect();
-
-          if (audioQueue.length === 0 && isFinal) {
-            cleanup();
-          } else {
-            const checkForNewAudio = () => {
-              if (audioQueue.length > 0) {
-                playNextAudio();
-              } else {
-                setTimeout(checkForNewAudio, 100); // Retry after 100ms if not final and queue is empty
-              }
-            };
-            checkForNewAudio();
-          }
-        };
-      });
-    }
-  };
-  
   const startRecording = useCallback(async () => {    
     try {
       setIsRecording(true);
@@ -240,16 +158,164 @@ function App() {
     }
   }, [sendToServer]);
 
+  const addToQueue = (audioChunk) => {
+    setAudioQueue((prevQueue) => {
+      const newQueue = [...prevQueue, audioChunk];
+      console.log("Queue updated, new length:", newQueue.length);
+      return newQueue;
+    });
+  };
+
+  const cleanup = useCallback(() => {
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    
+    setIsFinal(false);
+  
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+  
+    setIsPlaying(false);
+  
+    // Small delay to ensure state updates before starting recording again
+    setTimeout(() => {
+      console.log("Starting recording after cleanup");
+      startRecordingRef.current();
+    }, 100);
+  }, []);
+
+  const handleWebSocketMessage = (message) => {
+    const { type, isFinal: receivedIsFinal, audioBase64 } = message;
+
+    if (type === 'server_audio_response') {
+      if (audioBase64) {
+        console.log("adding audio to queue")
+        addToQueue(audioBase64);
+      }
+
+      if (receivedIsFinal) {
+        console.log("set isFinal to true")
+        setIsFinal(true);
+      }
+
+      console.log("isPlaying: ", isPlaying)
+      console.log("audioQueue.length: ", audioQueue.length)
+      if (!isPlaying && audioQueue.length > 0) {
+        let direction = 1;
+        const animate = () => {
+          setSpeakerSize(prev => {
+            const newSize = prev + direction;
+            if (newSize >= 144) direction = -1;
+            if (newSize <= 120) direction = 1;
+            return newSize;
+          });
+          animationFrameRef.current = requestAnimationFrame(animate);
+        };
+
+        console.log("start playing audio")
+        setIsPlaying(true);
+        animate(); 
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioContextRef.current = audioContext;
+      }
+    }
+  };
+
+  const playNextAudio = useCallback(() => {
+    const currentQueue = currentQueueRef.current;
+  
+    if (currentQueue.length > 0) {
+      const nextAudio = currentQueue[0];
+
+      const arrayBuffer = new Uint8Array(atob(nextAudio).split('').map(char => char.charCodeAt(0)));
+
+      const audioContext = audioContextRef.current;
+      const sourceNode = audioContext.createBufferSource();
+      audioContext.decodeAudioData(arrayBuffer.buffer, (buffer) => {
+        sourceNode.buffer = buffer;
+        sourceNode.connect(audioContext.destination);
+
+        console.log("playing a audio chunk")
+        sourceNode.start();
+        audioSourceNodeRef.current = sourceNode;
+
+        sourceNode.onended = () => {
+          setAudioQueue(prevQueue => prevQueue.slice(1));
+          sourceNode.disconnect();
+          
+          // Use setTimeout to give React time to update state and ref
+          setTimeout(() => {
+            if (currentQueueRef.current.length === 0 && isFinalRef.current) {
+              console.log("nothing to playing, can finish now");
+              cleanup();
+            } else if (currentQueueRef.current.length > 0) {
+              console.log("playing next chunk");
+              playNextAudio();
+            } else {
+              // Not final but queue empty, wait and check again
+              console.log("Not final but queue empty, wait and check again");
+              const checkInterval = setInterval(() => {
+                if (currentQueueRef.current.length > 0) {
+                  clearInterval(checkInterval);
+                  playNextAudio();
+                }
+              }, 100);
+              
+              // Clear interval after a reasonable timeout
+              setTimeout(() => clearInterval(checkInterval), 5000);
+            }
+          }, 10);
+        };
+      });
+    }
+  }, [cleanup]);
+
   const startConversion = useCallback(() => {
     console.log("Start Conversion");
     sendToServer(true);
     setIsConversionStarted(true);
   }, [sendToServer]);
 
+  useEffect(() => {
+    isFinalRef.current = isFinal;
+  }, [isFinal]);
+
   // Store the startRecording function in the ref
   useEffect(() => {
     startRecordingRef.current = startRecording;
   }, [startRecording]);
+
+  // Update the ref whenever audioQueue changes
+  useEffect(() => {
+    currentQueueRef.current = audioQueue;
+  }, [audioQueue]);
+
+  useEffect(() => {
+    console.log("audioQueue changed, length:", audioQueue.length);
+    
+    if (!isPlaying && audioQueue.length > 0) {
+      let direction = 1;
+      const animate = () => {
+        setSpeakerSize(prev => {
+          const newSize = prev + direction;
+          if (newSize >= 144) direction = -1;
+          if (newSize <= 120) direction = 1;
+          return newSize;
+        });
+        animationFrameRef.current = requestAnimationFrame(animate);
+      };
+      
+      console.log("start playing audio");
+      setIsPlaying(true);
+      animate();
+      
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      audioContextRef.current = audioContext;
+      playNextAudio();
+    }
+  }, [audioQueue, isPlaying, playNextAudio]); 
 
   // Initialize socket connection using ref to persist across re-renders
   useEffect(() => {
@@ -264,6 +330,7 @@ function App() {
       wsRef.current.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          console.log("✅ Received message: ", message);
           handleWebSocketMessage(message);
         } catch (error) {
           console.error("❌ Error processing WebSocket message:", error);
