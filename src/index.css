@@ -48,7 +48,7 @@ button:focus {
 /* Define the smooth, subtle aurora gradient with glass effect */
 @keyframes auroraBackground {
   0% {
-    background: linear-gradient(45deg, rgba(169, 223, 236, 0.3), rgba(249, 188, 188, 0.2)); /* Soft teal to soft peach */
+    background: linear-gradient(45deg, rgba(169, 223, 236, 0.4), rgba(249, 188, 188, 0.3)); /* Soft teal to soft peach */
   }
   25% {
     background: linear-gradient(45deg, rgba(204, 179, 255, 0.4), rgba(197, 255, 228, 0.3)); /* Light lavender to mint */
