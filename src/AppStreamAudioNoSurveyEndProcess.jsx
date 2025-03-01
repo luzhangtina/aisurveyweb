@@ -16,9 +16,6 @@ function App() {
   const [micSize, setMicSize] = useState(120);
   const [audioQueue, setAudioQueue] = useState([]); // Queue of audio chunks
   const [isFinal, setIsFinal] = useState(false); // Flag for final message
-  const [isConversionEnded, setIsConversionEnded] = useState(false); // Flag for final message
-  const [surveyProgress, setSurveyProgress] = useState("0%"); // Flag for final message
-  const [hasMicrophonePermission, setHasMicrophonePermission] = useState(false);
   const audioContextRef = useRef(null); // Audio context reference
   const audioSourceNodeRef = useRef(null); // Current source node reference
   const wsRef = useRef(null);
@@ -182,33 +179,21 @@ function App() {
   
     setIsPlaying(false);
   
-    if (isConversionEnded) {
-      setIsConversionStarted(false)
-      setIsConversionEnded(false)
-    } else {
-      // Small delay to ensure state updates before starting recording again
-      setTimeout(() => {
-        console.log("Starting recording after cleanup");
-        startRecordingRef.current();
-      }, 100);
-    }
-  }, [isConversionEnded]);
+    // Small delay to ensure state updates before starting recording again
+    setTimeout(() => {
+      console.log("Starting recording after cleanup");
+      startRecordingRef.current();
+    }, 100);
+  }, []);
 
   const handleWebSocketMessage = (message) => {
-    const { type, isFinal: receivedIsFinal, audioBase64, surveyProgress, surveyFinished } = message;
+    const { type, isFinal: receivedIsFinal, audioBase64 } = message;
 
     if (type === 'server_audio_response') {
       if (audioBase64) {
         console.log("adding audio to queue")
         addToQueue(audioBase64);
       }
-
-      if (surveyFinished) {
-        console.log("set isConversionEnded to true")
-        setIsConversionEnded(surveyFinished)
-      }
-
-      setSurveyProgress(surveyProgress)
 
       if (receivedIsFinal) {
         console.log("set isFinal to true")
@@ -287,22 +272,17 @@ function App() {
     }
   }, [cleanup]);
 
-  const startConversion = useCallback(async () => {
-    if (!hasMicrophonePermission) {
-      setHasMicrophonePermission(false);
-      const hasPermission = await requestMicrophonePermission();
-      if (!hasPermission) {
-          alert("No permission")
-          return;
-      }
-
-      setHasMicrophonePermission(true);
+  const startConversion = useCallback(() => {
+    const hasPermission = requestMicrophonePermission()
+    if (!hasPermission) {
+        alert("No permission")
+        return;
     }
-
+    
     console.log("Start Conversion");
     sendToServer(true);
     setIsConversionStarted(true);
-  }, [sendToServer, hasMicrophonePermission]);
+  }, [sendToServer]);
 
   useEffect(() => {
     isFinalRef.current = isFinal;
@@ -437,7 +417,7 @@ function App() {
           </div>
         )}
 
-        {isConversionStarted && !isPlaying && !isRecording && hasMicrophonePermission && (
+        {isConversionStarted && !isPlaying && !isRecording && (
           <div className="flex justify-center">
             <ThinkingDots />
           </div>
